@@ -4,10 +4,10 @@ go 1.18
 
 require (
 	github.com/influxdata/influxdb-client-go/v2 v2.13.0
-	github.com/redcoast/go-sophon/ginflux v0.0.0
+	github.com/nicexiaonie/ginflux v0.0.0
 )
 
-replace github.com/redcoast/go-sophon/ginflux => ../
+replace github.com/nicexiaonie/ginflux => ../
 
 require (
 	github.com/apapsch/go-jsonmerge/v2 v2.0.0 // indirect

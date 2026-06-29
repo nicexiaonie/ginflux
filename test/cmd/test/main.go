@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/influxdata/influxdb-client-go/v2/api/write"
-	"github.com/redcoast/go-sophon/ginflux"
+	"github.com/nicexiaonie/ginflux"
 )
 
 // TestConfig 测试配置

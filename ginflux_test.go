@@ -2,6 +2,9 @@ package ginflux
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -322,4 +325,71 @@ func containsHelper(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// roundTripperFunc 适配函数为 http.RoundTripper
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+// TestTransportWrapperIsUsed 验证 TransportWrapper 包装后的 Transport
+// 确实被实际请求路径使用。
+func TestTransportWrapperIsUsed(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	var called int32
+	config := NewDefaultConfig(server.URL, "token", "org", "bucket").
+		WithMaxRetries(0).
+		WithTransportWrapper(func(base http.RoundTripper) http.RoundTripper {
+			return roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				atomic.AddInt32(&called, 1)
+				return base.RoundTrip(req)
+			})
+		})
+
+	client, err := NewClient(config)
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+
+	point := NewPoint("test").AddField("value", 1).Build()
+	if err := client.WriteBlocking(context.Background(), point); err != nil {
+		t.Fatalf("WriteBlocking failed: %v", err)
+	}
+
+	if atomic.LoadInt32(&called) == 0 {
+		t.Error("Wrapped transport was not used for the request")
+	}
+}
+
+// TestHTTPRequestTimeoutApplied 验证 HTTPRequestTimeout 确实生效。
+// 服务端故意延迟，超时应触发请求失败。
+func TestHTTPRequestTimeoutApplied(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(300 * time.Millisecond)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	config := NewDefaultConfig(server.URL, "token", "org", "bucket").
+		WithMaxRetries(0).
+		WithHTTPRequestTimeout(50 * time.Millisecond)
+
+	client, err := NewClient(config)
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+
+	point := NewPoint("test").AddField("value", 1).Build()
+	err = client.WriteBlocking(context.Background(), point)
+	if err == nil {
+		t.Error("Expected timeout error, got nil")
+	}
 }

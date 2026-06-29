@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/influxdata/influxdb-client-go/v2/api/write"
-	"github.com/redcoast/go-sophon/ginflux"
+	"github.com/nicexiaonie/ginflux"
 )
 
 // BenchmarkConfig 基准测试配置

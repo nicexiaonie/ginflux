@@ -3,6 +3,8 @@ package ginflux
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/http"
 	"sync"
 	"time"
 
@@ -34,7 +36,6 @@ func NewClient(config *Config) (*Client, error) {
 		SetMaxRetries(config.MaxRetries).
 		SetMaxRetryInterval(uint(config.MaxRetryInterval.Milliseconds())).
 		SetExponentialBase(config.ExponentialBase).
-		SetHTTPRequestTimeout(uint(config.HTTPRequestTimeout.Seconds())).
 		SetUseGZip(config.UseGZip).
 		SetLogLevel(config.LogLevel).
 		SetPrecision(time.Nanosecond)
@@ -50,6 +51,33 @@ func NewClient(config *Config) (*Client, error) {
 	default:
 		options.SetPrecision(time.Nanosecond)
 	}
+
+	// 构造统一的 HTTP Transport（对齐官方默认值，见 influxdb-client-go
+	// api/http/options.go 中未设置 HTTPClient 时的默认构造）。
+	// 所有请求都走这份 Transport，保证用不用 tracing 时 HTTP 参数一致。
+	var transport http.RoundTripper = &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout: 5 * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout: 5 * time.Second,
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 100,
+		IdleConnTimeout:     90 * time.Second,
+	}
+
+	// 可选: 用户包装 Transport（典型用途是接入 tracing）。
+	if config.TransportWrapper != nil {
+		transport = config.TransportWrapper(transport)
+	}
+
+	// 自行构造 http.Client 并传给底层库。
+	// 注意: 一旦 SetHTTPClient，底层库的 SetHTTPRequestTimeout 会失效，
+	// 因此超时在这里直接设置到 client 上。
+	options.SetHTTPClient(&http.Client{
+		Timeout:   config.HTTPRequestTimeout,
+		Transport: transport,
+	})
 
 	// 创建 InfluxDB 客户端
 	client := influxdb2.NewClientWithOptions(

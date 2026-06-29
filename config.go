@@ -2,6 +2,7 @@ package ginflux
 
 import (
 	"fmt"
+	"net/http"
 	"time"
 )
 
@@ -51,11 +52,16 @@ type Config struct {
 	// LogLevel 日志级别 0-4，0=无日志，1=错误，2=警告，3=信息，4=调试
 	LogLevel uint
 
-	// TLSConfig TLS 配置（可选）
-	// TLSConfig *tls.Config
-
-	// HTTPClient 自定义 HTTP 客户端（可选）
-	// HTTPClient *http.Client
+	// TransportWrapper 用于包装 HTTP Transport（可选）
+	// ginflux 会先按官方默认值构造一份基础 Transport，再交给此函数包装。
+	// 典型用途是接入 tracing，例如:
+	//   cfg.WithTransportWrapper(func(base http.RoundTripper) http.RoundTripper {
+	//       return otelhttp.NewTransport(base)
+	//   })
+	// 注意: 设置此项后，ginflux 会自行构造 http.Client 并传给底层库，
+	// 此时底层库的 HTTPRequestTimeout/TLSConfig 选项将失效，
+	// 超时仍由 Config.HTTPRequestTimeout 保证（由 ginflux 设置到 client 上）。
+	TransportWrapper func(http.RoundTripper) http.RoundTripper
 }
 
 // NewDefaultConfig 创建默认配置
@@ -149,5 +155,14 @@ func (c *Config) WithLogLevel(level uint) *Config {
 // WithPrecision 设置时间精度
 func (c *Config) WithPrecision(precision string) *Config {
 	c.Precision = precision
+	return c
+}
+
+// WithTransportWrapper 设置 HTTP Transport 包装函数
+// 用于接入 tracing 等基于 http.RoundTripper 的能力。
+// 传入的函数会收到 ginflux 按官方默认值构造的基础 Transport，
+// 返回包装后的 Transport。
+func (c *Config) WithTransportWrapper(wrapper func(http.RoundTripper) http.RoundTripper) *Config {
+	c.TransportWrapper = wrapper
 	return c
 }
