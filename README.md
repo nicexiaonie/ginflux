@@ -158,9 +158,26 @@ func main() {
 
 `ginfluxotel.WithTracing()` 返回的是 `ginflux.ClientOption`，内部会将 ginflux 使用的 HTTP Transport 包装为 OpenTelemetry 的 `otelhttp.NewTransport`。之后，底层 InfluxDB HTTP 请求会自动生成 HTTP client span。
 
+默认 span name 使用 InfluxDB 语义，而不是 `otelhttp` 原始的 `HTTP <METHOD>`：
+
+| 请求 | 默认 span name |
+| --- | --- |
+| 写入数据 | `InfluxDB POST /api/v2/write` |
+| 查询数据 | `InfluxDB POST /api/v2/query` |
+| 健康检查 | `InfluxDB GET /health` |
+| 就绪检查 | `InfluxDB GET /ready` |
+
+默认命名规则是：
+
+```text
+InfluxDB <METHOD> <PATH>
+```
+
+这样在 trace 平台中可以直接识别该 span 来自 InfluxDB 客户端请求。
+
 ### 自定义 otelhttp.Option
 
-`WithTracing` 支持透传 `otelhttp.Option`：
+`WithTracing` 支持透传 `otelhttp.Option`。如果需要替换默认 span name，可以传入 `otelhttp.WithSpanNameFormatter`：
 
 ```go
 import (
@@ -175,7 +192,7 @@ client, err := ginflux.NewClient(
     config,
     ginfluxotel.WithTracing(
         otelhttp.WithSpanNameFormatter(func(_ string, req *http.Request) string {
-            return "InfluxDB " + req.Method + " " + req.URL.Path
+            return "InfluxDBClient " + req.URL.Path
         }),
     ),
 )
