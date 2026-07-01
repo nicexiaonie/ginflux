@@ -23,10 +23,12 @@ type Client struct {
 }
 
 // NewClient 创建新的 InfluxDB 客户端
-func NewClient(config *Config) (*Client, error) {
+func NewClient(config *Config, opts ...ClientOption) (*Client, error) {
 	if err := config.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
+
+	clientOpts := buildClientOptions(opts...)
 
 	// 创建客户端选项
 	options := influxdb2.DefaultOptions().
@@ -69,6 +71,9 @@ func NewClient(config *Config) (*Client, error) {
 	// 可选: 用户包装 Transport（典型用途是接入 tracing）。
 	if config.TransportWrapper != nil {
 		transport = config.TransportWrapper(transport)
+	}
+	for _, wrapper := range clientOpts.transportWrappers {
+		transport = wrapper(transport)
 	}
 
 	// 自行构造 http.Client 并传给底层库。

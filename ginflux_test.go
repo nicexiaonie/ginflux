@@ -368,6 +368,57 @@ func TestTransportWrapperIsUsed(t *testing.T) {
 	}
 }
 
+func TestClientOptionTransportWrappersAreComposedAfterConfigWrapper(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	var order []string
+	config := NewDefaultConfig(server.URL, "token", "org", "bucket").
+		WithMaxRetries(0).
+		WithTransportWrapper(func(base http.RoundTripper) http.RoundTripper {
+			return roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				order = append(order, "config")
+				return base.RoundTrip(req)
+			})
+		})
+
+	client, err := NewClient(config,
+		WithTransportWrapper(func(base http.RoundTripper) http.RoundTripper {
+			return roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				order = append(order, "option1")
+				return base.RoundTrip(req)
+			})
+		}),
+		WithTransportWrapper(func(base http.RoundTripper) http.RoundTripper {
+			return roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				order = append(order, "option2")
+				return base.RoundTrip(req)
+			})
+		}),
+	)
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Close()
+
+	point := NewPoint("test").AddField("value", 1).Build()
+	if err := client.WriteBlocking(context.Background(), point); err != nil {
+		t.Fatalf("WriteBlocking failed: %v", err)
+	}
+
+	expected := []string{"option2", "option1", "config"}
+	if len(order) != len(expected) {
+		t.Fatalf("expected wrapper order %v, got %v", expected, order)
+	}
+	for i := range expected {
+		if order[i] != expected[i] {
+			t.Fatalf("expected wrapper order %v, got %v", expected, order)
+		}
+	}
+}
+
 // TestHTTPRequestTimeoutApplied 验证 HTTPRequestTimeout 确实生效。
 // 服务端故意延迟，超时应触发请求失败。
 func TestHTTPRequestTimeoutApplied(t *testing.T) {

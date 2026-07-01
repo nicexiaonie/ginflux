@@ -1,21 +1,47 @@
 # ginflux
 
 [![Go Version](https://img.shields.io/badge/Go-%3E%3D%201.18-blue)](https://golang.org/)
+[![InfluxDB](https://img.shields.io/badge/InfluxDB-2.x-purple)](https://docs.influxdata.com/influxdb/v2/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-ginflux 是一个现代化的 InfluxDB 2.x 客户端封装库，基于官方 `github.com/influxdata/influxdb-client-go/v2` 构建，提供简洁、高性能、易用的 API。
+`ginflux` 是一个面向 InfluxDB 2.x 的 Go 客户端封装库，基于官方 [`github.com/influxdata/influxdb-client-go/v2`](https://github.com/influxdata/influxdb-client-go) 构建，提供更简洁的配置、写入、查询、Bucket 管理、指标记录和 OpenTelemetry Trace 接入能力。
+
+它适合在业务服务、后台任务、采集程序、监控系统和数据写入 SDK 中作为 InfluxDB 访问层使用。
+
+## 目录
+
+- [特性](#特性)
+- [安装](#安装)
+- [快速开始](#快速开始)
+- [OpenTelemetry Trace](#opentelemetry-trace)
+- [配置](#配置)
+- [Client Option](#client-option)
+- [数据点构建](#数据点构建)
+- [写入数据](#写入数据)
+- [查询数据](#查询数据)
+- [指标收集](#指标收集)
+- [Bucket 管理](#bucket-管理)
+- [健康检查](#健康检查)
+- [全局默认客户端](#全局默认客户端)
+- [错误处理](#错误处理)
+- [测试](#测试)
+- [生产实践建议](#生产实践建议)
+- [版本要求](#版本要求)
+- [依赖](#依赖)
+- [许可证](#许可证)
 
 ## 特性
 
-- ✅ **全面封装** - 完整支持 InfluxDB 2.x 所有核心功能
-- ✅ **现代化设计** - 链式调用、流畅的 API 设计
-- ✅ **高性能** - 支持批量写入、异步写入、连接池管理
-- ✅ **易于使用** - 简洁的 API，丰富的示例代码
-- ✅ **类型安全** - 完整的类型定义和错误处理
-- ✅ **生产就绪** - 包含重试机制、超时控制、错误处理
-- ✅ **指标收集** - 内置指标收集器，方便监控和统计
-- ✅ **查询构建器** - Flux 查询构建器，无需手写复杂查询语句
-- ✅ **Bucket 管理** - 完整的 Bucket 生命周期管理
+- **简洁配置**：通过 `NewDefaultConfig` 获取生产可用默认配置，并支持链式调整。
+- **Client Option 扩展机制**：`NewClient(config, opts...)` 支持按需挂载 HTTP Transport 能力。
+- **OpenTelemetry Trace 接入**：通过 `contrib/otel` 子包提供 `WithTracing()`，按需启用 HTTP client trace。
+- **阻塞与非阻塞写入**：同时支持官方 SDK 的 blocking write 和 async write。
+- **批量写入器**：提供 `Writer`，支持缓冲、定时 flush、错误通道和关闭等待。
+- **Flux 查询构建器**：通过链式 API 构建常见 Flux 查询，减少手写字符串。
+- **指标收集工具**：提供 counter、gauge、timing、timer 等常用指标写入封装。
+- **Bucket 管理**：封装 Bucket 创建、查询、删除、保留策略更新和数据删除。
+- **健康检查**：封装 `Ping`、`Health`、`Ready`。
+- **兼容官方 SDK**：保留访问底层 Organizations、Buckets、Users、Authorizations、Tasks、Labels、Delete API 的能力。
 
 ## 安装
 
@@ -23,9 +49,13 @@ ginflux 是一个现代化的 InfluxDB 2.x 客户端封装库，基于官方 `gi
 go get github.com/nicexiaonie/ginflux
 ```
 
-## 快速开始
+如需使用 OpenTelemetry Trace：
 
-### 基础使用
+```bash
+go get github.com/nicexiaonie/ginflux/contrib/otel
+```
+
+## 快速开始
 
 ```go
 package main
@@ -38,7 +68,6 @@ import (
 )
 
 func main() {
-    // 创建配置
     config := ginflux.NewDefaultConfig(
         "http://localhost:8086",
         "your-token",
@@ -46,26 +75,23 @@ func main() {
         "your-bucket",
     )
 
-    // 创建客户端
     client, err := ginflux.NewClient(config)
     if err != nil {
         log.Fatal(err)
     }
     defer client.Close()
 
-    // 写入数据
+    ctx := context.Background()
+
     point := ginflux.NewPoint("temperature").
         AddTag("location", "room1").
         AddField("value", 23.5).
         Build()
 
-    ctx := context.Background()
-    err = client.WriteBlocking(ctx, point)
-    if err != nil {
+    if err := client.WriteBlocking(ctx, point); err != nil {
         log.Fatal(err)
     }
 
-    // 查询数据
     query := ginflux.NewQueryBuilder(config.Bucket).
         Measurement("temperature").
         Start("-1h").
@@ -78,12 +104,20 @@ func main() {
     }
 
     for result.Next() {
-        log.Printf("Value: %v", result.Record().Value())
+        log.Printf("value=%v", result.Record().Value())
+    }
+
+    if result.Err() != nil {
+        log.Fatal(result.Err())
     }
 }
 ```
 
-### 使用全局默认客户端
+## OpenTelemetry Trace
+
+`ginflux` 的核心包不直接初始化 OpenTelemetry SDK，也不替业务设置 exporter、resource、sampling 策略。应用侧应先按自己的观测平台完成 OpenTelemetry 初始化，然后通过 `contrib/otel` 子包启用 ginflux 的 HTTP client trace。
+
+### 使用方式
 
 ```go
 package main
@@ -93,10 +127,10 @@ import (
     "log"
 
     "github.com/nicexiaonie/ginflux"
+    ginfluxotel "github.com/nicexiaonie/ginflux/contrib/otel"
 )
 
 func main() {
-    // 连接并设置为默认客户端
     config := ginflux.NewDefaultConfig(
         "http://localhost:8086",
         "your-token",
@@ -104,29 +138,81 @@ func main() {
         "your-bucket",
     )
 
-    err := ginflux.Connect(config)
+    client, err := ginflux.NewClient(
+        config,
+        ginfluxotel.WithTracing(),
+    )
     if err != nil {
         log.Fatal(err)
     }
-    defer ginflux.Close()
-
-    // 使用全局函数
-    point := ginflux.NewPoint("cpu").
-        AddTag("host", "server01").
-        AddField("usage", 75.5).
-        Build()
+    defer client.Close()
 
     ctx := context.Background()
-    err = ginflux.WriteBlocking(ctx, point)
-    if err != nil {
+    point := ginflux.NewPoint("cpu").AddField("usage", 75.5).Build()
+
+    if err := client.WriteBlocking(ctx, point); err != nil {
         log.Fatal(err)
     }
 }
 ```
 
-## 核心功能
+`ginfluxotel.WithTracing()` 返回的是 `ginflux.ClientOption`，内部会将 ginflux 使用的 HTTP Transport 包装为 OpenTelemetry 的 `otelhttp.NewTransport`。之后，底层 InfluxDB HTTP 请求会自动生成 HTTP client span。
 
-### 1. 配置管理
+### 自定义 otelhttp.Option
+
+`WithTracing` 支持透传 `otelhttp.Option`：
+
+```go
+import (
+    "net/http"
+
+    "github.com/nicexiaonie/ginflux"
+    ginfluxotel "github.com/nicexiaonie/ginflux/contrib/otel"
+    "go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+)
+
+client, err := ginflux.NewClient(
+    config,
+    ginfluxotel.WithTracing(
+        otelhttp.WithSpanNameFormatter(func(_ string, req *http.Request) string {
+            return "InfluxDB " + req.Method + " " + req.URL.Path
+        }),
+    ),
+)
+```
+
+### Trace context 传播边界
+
+`WithTracing()` 只负责 HTTP Transport instrumentation，不改变 API 的 context 传播语义。
+
+推荐在需要完整父子链路的场景使用带 `context.Context` 的 API：
+
+- `WriteBlocking`
+- `WriteBlockingWithBucket`
+- `WriteBatchBlocking`
+- `WriteRecordBlocking`
+- `Query`
+- `QueryRaw`
+- `Ping`
+- `Health`
+- `Ready`
+- `Setup`
+
+这些方法会把调用方传入的 `ctx` 继续传给底层 SDK。只要调用方 `ctx` 中已有上游 span，InfluxDB HTTP client span 就可以挂在上游 span 下面。
+
+当前不建议对以下路径承诺完整父子链路：
+
+- `Write`
+- `WriteWithBucket`
+- `WriteBatch`
+- `WriteRecord`
+- `Writer`
+
+原因是非阻塞写入方法没有 `context.Context` 参数；`Writer` 内部异步 flush 会使用后台 context。它们仍会经过 wrapped transport，但不保证继承业务请求的上游 span。
+
+## 配置
+
+### 创建默认配置
 
 ```go
 config := ginflux.NewDefaultConfig(
@@ -134,98 +220,269 @@ config := ginflux.NewDefaultConfig(
     "your-token",
     "your-org",
     "your-bucket",
-).WithBatchSize(1000).                      // 批量写入大小
-  WithFlushInterval(5 * time.Second).       // 刷新间隔
-  WithMaxRetries(3).                        // 最大重试次数
-  WithHTTPRequestTimeout(30 * time.Second). // HTTP 超时
-  WithUseGZip(true).                        // 启用压缩
-  WithLogLevel(2)                           // 日志级别
+)
 ```
 
-### 2. 数据写入
+默认值：
 
-#### 单点写入
+| 字段 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `ServerURL` | `string` | 必填 | InfluxDB 地址，例如 `http://localhost:8086` |
+| `Token` | `string` | 必填 | InfluxDB API Token |
+| `Organization` | `string` | 必填 | 组织名称 |
+| `Bucket` | `string` | 必填 | 默认 Bucket |
+| `Precision` | `string` | `ns` | 时间精度，支持 `ns`、`us`、`ms`、`s` |
+| `BatchSize` | `uint` | `5000` | 官方异步写入 API 批大小 |
+| `FlushInterval` | `time.Duration` | `1s` | 官方异步写入 API 刷新间隔 |
+| `RetryInterval` | `time.Duration` | `5s` | 重试间隔 |
+| `MaxRetries` | `uint` | `3` | 最大重试次数 |
+| `MaxRetryInterval` | `time.Duration` | `125s` | 最大重试间隔 |
+| `ExponentialBase` | `uint` | `2` | 指数退避基数 |
+| `HTTPRequestTimeout` | `time.Duration` | `20s` | HTTP 请求超时时间 |
+| `UseGZip` | `bool` | `false` | 是否启用 GZip |
+| `LogLevel` | `uint` | `1` | 日志级别，`0` 无日志，`1` 错误，`2` 警告，`3` 信息，`4` 调试 |
+| `TransportWrapper` | `func(http.RoundTripper) http.RoundTripper` | `nil` | HTTP Transport 包装入口 |
+
+### 链式配置
 
 ```go
-// 阻塞写入
-point := ginflux.NewPoint("temperature").
-    AddTag("location", "room1").
-    AddTag("sensor", "sensor1").
-    AddField("value", 23.5).
-    AddField("humidity", 65.0).
-    Build()
-
-err := client.WriteBlocking(ctx, point)
-
-// 非阻塞写入
-client.Write(point)
+config := ginflux.NewDefaultConfig(
+    "http://localhost:8086",
+    "your-token",
+    "your-org",
+    "your-bucket",
+).
+    WithBatchSize(1000).
+    WithFlushInterval(5 * time.Second).
+    WithRetryInterval(3 * time.Second).
+    WithMaxRetries(5).
+    WithHTTPRequestTimeout(30 * time.Second).
+    WithUseGZip(true).
+    WithLogLevel(2).
+    WithPrecision("ms")
 ```
 
-#### 批量写入
+### 配置校验
+
+`NewClient` 会调用 `config.Validate()`。以下配置会返回错误：
+
+- `ServerURL` 为空
+- `Token` 为空
+- `Organization` 为空
+- `Bucket` 为空
+- `Precision` 不是 `ns`、`us`、`ms`、`s` 之一
+
+## Client Option
+
+`NewClient` 支持变参 option：
+
+```go
+client, err := ginflux.NewClient(config, opts...)
+```
+
+当前主包提供：
+
+```go
+ginflux.WithTransportWrapper(wrapper)
+```
+
+它可以包装 ginflux 内部创建的 `http.RoundTripper`，适合接入 tracing、监控、自定义 header、请求日志等 HTTP 层能力。
+
+```go
+client, err := ginflux.NewClient(
+    config,
+    ginflux.WithTransportWrapper(func(base http.RoundTripper) http.RoundTripper {
+        return roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+            req.Header.Set("X-Client", "ginflux")
+            return base.RoundTrip(req)
+        })
+    }),
+)
+```
+
+如果同时设置了 `config.WithTransportWrapper(...)` 和 `NewClient(config, opts...)`，顺序为：
+
+1. 基础 `http.Transport`
+2. `config.TransportWrapper`
+3. `NewClient` 传入的 `ClientOption` transport wrapper，按传入顺序继续包裹
+
+## 数据点构建
+
+### 链式构建
+
+```go
+point := ginflux.NewPoint("http_requests").
+    AddTag("method", "GET").
+    AddTag("endpoint", "/api/users").
+    AddTag("status", "200").
+    AddField("duration_ms", 125).
+    AddField("bytes", 1024).
+    SetTimestamp(time.Now()).
+    Build()
+```
+
+### 批量添加标签和字段
+
+```go
+point := ginflux.NewPoint("system_metrics").
+    AddTags(map[string]string{
+        "host": "server01",
+        "region": "cn-east",
+    }).
+    AddFields(map[string]interface{}{
+        "cpu":    75.5,
+        "memory": 8192,
+        "disk":   "healthy",
+    }).
+    Build()
+```
+
+### 直接构建
+
+```go
+point := ginflux.BuildPoint(
+    "temperature",
+    map[string]string{"location": "room1"},
+    map[string]interface{}{"value": 23.5},
+    time.Now(),
+)
+
+pointNow := ginflux.BuildPointNow(
+    "temperature",
+    map[string]string{"location": "room1"},
+    map[string]interface{}{"value": 23.5},
+)
+```
+
+## 写入数据
+
+### 阻塞写入
+
+阻塞写入会返回明确错误，适合需要确认写入结果、需要 trace 关联、需要请求级超时控制的场景。
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+defer cancel()
+
+point := ginflux.NewPoint("temperature").
+    AddTag("location", "room1").
+    AddField("value", 23.5).
+    Build()
+
+if err := client.WriteBlocking(ctx, point); err != nil {
+    log.Printf("write failed: %v", err)
+}
+```
+
+### 写入指定 Bucket
+
+```go
+err := client.WriteBlockingWithBucket(ctx, "another-bucket", point)
+```
+
+### 批量阻塞写入
 
 ```go
 points := []*write.Point{
     ginflux.NewPoint("cpu").AddTag("host", "server01").AddField("usage", 75.5).Build(),
     ginflux.NewPoint("cpu").AddTag("host", "server02").AddField("usage", 82.3).Build(),
-    ginflux.NewPoint("cpu").AddTag("host", "server03").AddField("usage", 68.1).Build(),
 }
 
-err := client.WriteBatchBlocking(ctx, points...)
+if err := client.WriteBatchBlocking(ctx, points...); err != nil {
+    log.Printf("batch write failed: %v", err)
+}
 ```
 
-#### 使用批量写入器
+### 行协议写入
 
 ```go
-// 创建批量写入器
+record := `cpu,host=server01 usage=75.5`
+
+if err := client.WriteRecordBlocking(ctx, record); err != nil {
+    log.Printf("record write failed: %v", err)
+}
+```
+
+### 非阻塞写入
+
+非阻塞写入使用底层官方 SDK 的异步写入 API。调用会快速返回，写入错误需要从错误通道读取。
+
+```go
+client.Write(point)
+client.WriteBatch(points...)
+client.WriteRecord(`cpu,host=server01 usage=75.5`)
+
+client.Flush()
+```
+
+监听异步错误：
+
+```go
+go func() {
+    for err := range client.Errors() {
+        log.Printf("async write error: %v", err)
+    }
+}()
+```
+
+### 批量写入器 Writer
+
+`Writer` 提供独立缓冲区，达到批大小或定时器触发时异步 flush。
+
+```go
 writer := ginflux.NewWriter(client, "my-bucket", 100, 2*time.Second)
 defer writer.Close()
 
-// 监听错误
 go func() {
     for err := range writer.Errors() {
-        log.Printf("Write error: %v", err)
+        log.Printf("writer error: %v", err)
     }
 }()
 
-// 写入数据
 for i := 0; i < 1000; i++ {
     point := ginflux.NewPoint("sensor_data").
         AddTag("sensor_id", fmt.Sprintf("sensor_%d", i)).
         AddField("value", rand.Float64()*100).
         Build()
 
-    writer.Write(point)
+    if err := writer.Write(point); err != nil {
+        log.Printf("buffer write failed: %v", err)
+    }
 }
 
-// 强制刷新
-writer.Flush()
+if err := writer.Flush(); err != nil {
+    log.Printf("flush failed: %v", err)
+}
 ```
 
-### 3. 查询数据
+`Writer.Close()` 会先 flush，随后等待内部 goroutine 结束并关闭错误通道。
 
-#### 使用查询构建器
+## 查询数据
+
+### 使用 QueryBuilder
 
 ```go
-// 简单查询
 records, err := ginflux.NewQueryBuilder("my-bucket").
     Measurement("cpu").
     Start("-1h").
     FilterTag("host", "server01").
     FilterField("usage").
-    Execute(ctx, client)
-
-// 聚合查询
-records, err := ginflux.NewQueryBuilder("my-bucket").
-    Measurement("temperature").
-    Start("-24h").
-    FilterTag("location", "room1").
-    FilterField("value").
     Mean().
-    GroupBy("location").
+    GroupBy("host").
     Execute(ctx, client)
+if err != nil {
+    log.Printf("query failed: %v", err)
+}
 
-// 复杂查询
-records, err := ginflux.NewQueryBuilder("my-bucket").
+for _, record := range records {
+    log.Printf("record=%v", record)
+}
+```
+
+### 构建复杂查询
+
+```go
+query := ginflux.NewQueryBuilder("my-bucket").
     Measurement("sensor_data").
     Start("-7d").
     Stop("-1d").
@@ -236,13 +493,24 @@ records, err := ginflux.NewQueryBuilder("my-bucket").
     GroupBy("location", "sensor_id").
     Sort(`"_time"`).
     Limit(100).
+    Build()
+```
+
+### 使用 time.Time 设置时间范围
+
+```go
+records, err := ginflux.NewQueryBuilder("my-bucket").
+    Measurement("cpu").
+    StartTime(time.Now().Add(-1 * time.Hour)).
+    StopTime(time.Now()).
+    FilterField("usage").
     Execute(ctx, client)
 ```
 
-#### 原始 Flux 查询
+### 原始 Flux 查询
 
 ```go
-query := `
+flux := `
 from(bucket: "my-bucket")
   |> range(start: -1h)
   |> filter(fn: (r) => r["_measurement"] == "cpu")
@@ -250,16 +518,36 @@ from(bucket: "my-bucket")
   |> mean()
 `
 
-result, err := client.Query(ctx, query)
+result, err := client.Query(ctx, flux)
+if err != nil {
+    log.Printf("query failed: %v", err)
+    return
+}
+
 for result.Next() {
-    log.Printf("Value: %v", result.Record().Value())
+    log.Printf("value=%v", result.Record().Value())
+}
+
+if result.Err() != nil {
+    log.Printf("query result error: %v", result.Err())
 }
 ```
 
-### 4. 指标收集
+### 查询原始字符串
 
 ```go
-// 创建指标收集器
+raw, err := client.QueryRaw(ctx, flux)
+if err != nil {
+    log.Printf("query raw failed: %v", err)
+}
+log.Println(raw)
+```
+
+## 指标收集
+
+`Metrics` 是基于 `Client` 的轻量指标写入工具，适合记录应用层计数器、仪表值、耗时等。
+
+```go
 metrics := ginflux.NewMetrics(
     client,
     "api_metrics",
@@ -268,44 +556,57 @@ metrics := ginflux.NewMetrics(
         "env":     "production",
     },
 )
+```
 
-// 记录指标
+### 记录普通字段
+
+```go
 err := metrics.Record(map[string]interface{}{
     "requests_total": 1,
     "response_time":  125,
     "status_code":    200,
 })
+```
 
-// 记录计数器
+### 记录 Counter / Gauge / Timing
+
+```go
 err := metrics.RecordCounter("requests", 1, map[string]string{
     "endpoint": "/api/users",
     "method":   "GET",
 })
 
-// 记录仪表盘值
-err := metrics.RecordGauge("cpu_usage", 75.5, map[string]string{
+err = metrics.RecordGauge("cpu_usage", 75.5, map[string]string{
     "host": "server01",
 })
 
-// 使用计时器
-timer := metrics.StartTimer("request_duration", map[string]string{
+err = metrics.RecordTiming("request_duration", 120*time.Millisecond, map[string]string{
     "endpoint": "/api/users",
 })
-// ... 执行操作 ...
-timer.Stop()
+```
 
-// 或者带错误处理
-timer := metrics.StartTimer("db_query")
-result, err := db.Query(...)
-timer.StopWithError(err)
+### Timer
 
-// 查询最新值
-latestValue, err := metrics.GetLatestValue(ctx, "cpu_usage", map[string]string{
+```go
+timer := metrics.StartTimer("db_query", map[string]string{
+    "operation": "list_users",
+})
+
+err := doQuery()
+
+if stopErr := timer.StopWithError(err); stopErr != nil {
+    log.Printf("record timer failed: %v", stopErr)
+}
+```
+
+### 查询指标
+
+```go
+latest, err := metrics.GetLatestValue(ctx, "cpu_usage", map[string]string{
     "host": "server01",
 })
 
-// 查询聚合值
-avgResponseTime, err := metrics.GetAggregatedValue(
+avg, err := metrics.GetAggregatedValue(
     ctx,
     "response_time",
     "mean()",
@@ -313,254 +614,309 @@ avgResponseTime, err := metrics.GetAggregatedValue(
     "",
     map[string]string{"endpoint": "/api/users"},
 )
+
+records, err := metrics.QueryMetrics(ctx, "-1h", "", map[string]string{
+    "method": "GET",
+})
+
+_ = latest
+_ = avg
+_ = records
 ```
 
-### 5. Bucket 管理
+## Bucket 管理
 
 ```go
 bucketMgr := ginflux.NewBucketManager(client)
+```
 
-// 创建 Bucket（保留 30 天）
-bucket, err := bucketMgr.CreateBucket(ctx, "my-bucket", 30*24)
+### 创建 Bucket
 
-// 列出所有 Buckets
+`retentionHours` 单位是小时。
+
+```go
+bucket, err := bucketMgr.CreateBucket(ctx, "metrics", 30*24)
+if err != nil {
+    log.Printf("create bucket failed: %v", err)
+}
+_ = bucket
+```
+
+### 查询 Bucket
+
+```go
+bucket, err := bucketMgr.GetBucket(ctx, "metrics")
+
 buckets, err := bucketMgr.ListBuckets(ctx)
 
-// 获取 Bucket
-bucket, err := bucketMgr.GetBucket(ctx, "my-bucket")
+_ = bucket
+_ = buckets
+```
 
-// 更新保留策略（改为 60 天）
-bucket, err := bucketMgr.UpdateBucketRetention(ctx, "my-bucket", 60*24)
+### 更新保留策略
 
-// 删除数据
+```go
+bucket, err := bucketMgr.UpdateBucketRetention(ctx, "metrics", 60*24)
+_ = bucket
+```
+
+### 删除数据
+
+```go
 err := bucketMgr.DeleteData(
     ctx,
-    "my-bucket",
+    "metrics",
     "temperature",
     time.Now().Add(-24*time.Hour),
     time.Now(),
     `location="room1"`,
 )
-
-// 删除 Bucket
-err := bucketMgr.DeleteBucket(ctx, "my-bucket")
 ```
 
-### 6. 健康检查
+### 删除 Bucket
 
 ```go
-// Ping 测试
-ok, err := client.Ping(ctx)
-
-// 健康检查
-health, err := client.Health(ctx)
-log.Printf("Status: %s", health.Status)
-
-// 就绪检查
-ready, err := client.Ready(ctx)
+err := bucketMgr.DeleteBucket(ctx, "metrics")
 ```
 
-## 配置选项
-
-| 选项 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| ServerURL | string | - | InfluxDB 服务器地址 |
-| Token | string | - | 认证令牌 |
-| Organization | string | - | 组织名称 |
-| Bucket | string | - | 默认存储桶 |
-| Precision | string | "ns" | 时间精度 (ns/us/ms/s) |
-| BatchSize | uint | 5000 | 批量写入大小 |
-| FlushInterval | time.Duration | 1s | 刷新间隔 |
-| RetryInterval | time.Duration | 5s | 重试间隔 |
-| MaxRetries | uint | 3 | 最大重试次数 |
-| MaxRetryInterval | time.Duration | 125s | 最大重试间隔 |
-| HTTPRequestTimeout | time.Duration | 20s | HTTP 请求超时 |
-| UseGZip | bool | false | 是否启用 GZip 压缩 |
-| LogLevel | uint | 1 | 日志级别 (0-4) |
-
-## 示例代码
-
-查看 `examples/` 目录获取更多示例：
-
-- `basic.go` - 基础使用示例
-- `batch_write.go` - 批量写入示例
-- `bucket_management.go` - Bucket 管理示例
-- `advanced.go` - 高级功能示例
-- `metrics.go` - 指标收集示例
-
-运行示例：
-
-```bash
-cd examples
-go run basic.go
-```
-
-## 最佳实践
-
-### 1. 连接管理
+## 健康检查
 
 ```go
-// 使用单例模式管理全局客户端
-var client *ginflux.Client
-
-func InitInfluxDB() error {
-    config := ginflux.NewDefaultConfig(...)
-    var err error
-    client, err = ginflux.NewClient(config)
-    return err
-}
-
-func GetInfluxDB() *ginflux.Client {
-    return client
-}
-
-func CloseInfluxDB() {
-    if client != nil {
-        client.Close()
-    }
-}
-```
-
-### 2. 错误处理
-
-```go
-// 非阻塞写入时监听错误
-writeAPI := client.WriteAPI()
-go func() {
-    for err := range client.Errors() {
-        log.Printf("InfluxDB write error: %v", err)
-        // 可以实现重试逻辑或告警
-    }
-}()
-```
-
-### 3. 批量写入优化
-
-```go
-// 使用批量写入器处理大量数据
-writer := ginflux.NewWriter(client, bucket, 1000, 5*time.Second)
-defer writer.Close()
-
-// 并发写入
-var wg sync.WaitGroup
-for i := 0; i < 10; i++ {
-    wg.Add(1)
-    go func(id int) {
-        defer wg.Done()
-        for j := 0; j < 1000; j++ {
-            point := ginflux.NewPoint("data").
-                AddTag("worker", fmt.Sprintf("worker_%d", id)).
-                AddField("value", j).
-                Build()
-            writer.Write(point)
-        }
-    }(i)
-}
-wg.Wait()
-```
-
-### 4. 查询优化
-
-```go
-// 使用时间范围限制查询
-qb := ginflux.NewQueryBuilder(bucket).
-    Measurement("metrics").
-    Start("-1h").              // 只查询最近1小时
-    FilterField("cpu_usage").
-    Limit(1000)                // 限制返回数量
-
-// 使用聚合减少数据量
-qb := ginflux.NewQueryBuilder(bucket).
-    Measurement("metrics").
-    Start("-24h").
-    Mean().                    // 计算平均值
-    GroupBy("host")            // 按主机分组
-```
-
-### 5. 标签设计
-
-```go
-// 好的标签设计：低基数、有意义
-point := ginflux.NewPoint("http_requests").
-    AddTag("method", "GET").           // 低基数
-    AddTag("endpoint", "/api/users").  // 低基数
-    AddTag("status", "200").           // 低基数
-    AddField("duration_ms", 125).      // 高基数数据用字段
-    AddField("bytes", 1024).
-    Build()
-
-// 避免：高基数标签
-// AddTag("user_id", "12345")  // ❌ 用户ID基数太高
-// AddTag("timestamp", "...")  // ❌ 时间戳基数太高
-```
-
-## 性能建议
-
-1. **批量写入** - 使用批量写入而不是单点写入
-2. **异步写入** - 对于非关键数据使用非阻塞写入
-3. **启用压缩** - 网络带宽有限时启用 GZip 压缩
-4. **合理的批次大小** - 根据数据量调整 BatchSize（1000-5000）
-5. **连接复用** - 复用客户端连接，避免频繁创建
-6. **查询优化** - 使用时间范围、限制返回数量、使用聚合
-
-## 故障排查
-
-### 连接失败
-
-```go
-// 检查连接
-ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-defer cancel()
-
 ok, err := client.Ping(ctx)
 if err != nil {
-    log.Printf("Connection failed: %v", err)
-    // 检查：
-    // 1. ServerURL 是否正确
-    // 2. Token 是否有效
-    // 3. 网络是否可达
-    // 4. InfluxDB 服务是否运行
+    log.Printf("ping failed: %v", err)
+}
+
+health, err := client.Health(ctx)
+if err != nil {
+    log.Printf("health failed: %v", err)
+}
+
+ready, err := client.Ready(ctx)
+if err != nil {
+    log.Printf("ready failed: %v", err)
+}
+
+_ = ok
+_ = health
+_ = ready
+```
+
+## 全局默认客户端
+
+`ginflux` 提供全局默认客户端，适合简单应用或脚本。大型服务中更推荐显式持有 `*ginflux.Client`。
+
+```go
+config := ginflux.NewDefaultConfig(
+    "http://localhost:8086",
+    "your-token",
+    "your-org",
+    "your-bucket",
+)
+
+if err := ginflux.Connect(config); err != nil {
+    log.Fatal(err)
+}
+defer ginflux.Close()
+
+point := ginflux.NewPoint("cpu").
+    AddTag("host", "server01").
+    AddField("usage", 75.5).
+    Build()
+
+if err := ginflux.WriteBlocking(context.Background(), point); err != nil {
+    log.Fatal(err)
 }
 ```
+
+全局客户端也支持 `ClientOption`：
+
+```go
+err := ginflux.Connect(
+    config,
+    ginfluxotel.WithTracing(),
+)
+```
+
+## 错误处理
+
+### 创建客户端失败
+
+```go
+client, err := ginflux.NewClient(config)
+if err != nil {
+    log.Fatalf("create ginflux client failed: %v", err)
+}
+```
+
+常见原因：
+
+- 必填配置为空
+- `Precision` 非法
 
 ### 写入失败
 
 ```go
-// 启用调试日志
-config := ginflux.NewDefaultConfig(...).
-    WithLogLevel(4)  // 最详细的日志
+ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+defer cancel()
 
-// 检查错误
-err := client.WriteBlocking(ctx, point)
-if err != nil {
-    log.Printf("Write failed: %v", err)
-    // 常见原因：
-    // 1. Bucket 不存在
-    // 2. Token 权限不足
-    // 3. 数据格式错误
-    // 4. 网络超时
+if err := client.WriteBlocking(ctx, point); err != nil {
+    log.Printf("write failed: %v", err)
 }
 ```
+
+常见原因：
+
+- InfluxDB 地址错误或不可达
+- Token 无效或权限不足
+- Bucket 不存在
+- 请求超时
+- 数据格式不符合 InfluxDB line protocol 要求
 
 ### 查询失败
 
 ```go
-result, err := client.Query(ctx, query)
+result, err := client.Query(ctx, flux)
 if err != nil {
-    log.Printf("Query failed: %v", err)
-    // 检查：
-    // 1. Flux 语法是否正确
-    // 2. Bucket 是否存在
-    // 3. 时间范围是否合理
+    log.Printf("query failed: %v", err)
+    return
 }
 
 for result.Next() {
-    // 处理结果
+    // process record
 }
 
 if result.Err() != nil {
-    log.Printf("Query result error: %v", result.Err())
+    log.Printf("query result error: %v", result.Err())
 }
+```
+
+常见原因：
+
+- Flux 语法错误
+- Bucket 不存在
+- 时间范围不合理
+- Token 缺少查询权限
+
+### 非阻塞写入错误
+
+```go
+go func() {
+    for err := range client.Errors() {
+        log.Printf("async write error: %v", err)
+    }
+}()
+```
+
+## 测试
+
+运行全部测试：
+
+```bash
+go test ./...
+```
+
+当前测试覆盖：
+
+- 配置校验与链式配置
+- PointBuilder
+- QueryBuilder
+- Metrics 基础结构
+- Client 创建与连接检查
+- TransportWrapper 请求路径
+- HTTP 请求超时
+- ClientOption transport wrapper 组合
+- `contrib/otel` tracing option 请求路径
+
+仓库中还包含 `test/` 目录，用于独立的集成测试、基准测试和环境配置示例。运行集成测试前需要准备 InfluxDB 地址、Token、Org 和 Bucket。
+
+## 生产实践建议
+
+### 1. 复用 Client
+
+`Client` 内部复用 HTTP 连接。生产环境应复用一个或少量 client 实例，不要每次写入或查询都创建新 client。
+
+```go
+var influxClient *ginflux.Client
+
+func InitInflux(config *ginflux.Config) error {
+    client, err := ginflux.NewClient(config)
+    if err != nil {
+        return err
+    }
+    influxClient = client
+    return nil
+}
+
+func CloseInflux() {
+    if influxClient != nil {
+        influxClient.Close()
+    }
+}
+```
+
+### 2. 请求级超时
+
+带 `context.Context` 的 API 建议传入带超时的 context，避免业务请求长期阻塞。
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+defer cancel()
+
+err := client.WriteBlocking(ctx, point)
+```
+
+### 3. 高吞吐写入
+
+高吞吐场景优先考虑：
+
+- 使用批量写入
+- 合理配置 `BatchSize` 和 `FlushInterval`
+- 复用 client
+- 网络带宽有限时启用 GZip
+- 监听异步写入错误
+
+```go
+config := ginflux.NewDefaultConfig(...).
+    WithBatchSize(5000).
+    WithFlushInterval(2 * time.Second).
+    WithUseGZip(true)
+```
+
+### 4. Trace 场景优先使用 blocking API
+
+如果需要把 InfluxDB 请求挂到上游业务 trace 下，优先使用带 `context.Context` 的 blocking/query/health API。非阻塞写入和当前 `Writer` 不保证继承调用方 span。
+
+### 5. 标签基数控制
+
+InfluxDB 标签适合低基数字段，字段适合高基数或连续变化的数据。
+
+推荐：
+
+```go
+point := ginflux.NewPoint("http_requests").
+    AddTag("method", "GET").
+    AddTag("endpoint", "/api/users").
+    AddTag("status", "200").
+    AddField("duration_ms", 125).
+    AddField("user_id", "12345").
+    Build()
+```
+
+避免把用户 ID、订单 ID、请求 ID、时间戳等高基数值放入 tag。
+
+### 6. 查询范围控制
+
+查询时尽量设置明确时间范围、measurement、field、tag 过滤条件，并限制返回数量。
+
+```go
+records, err := ginflux.NewQueryBuilder("metrics").
+    Measurement("cpu").
+    Start("-1h").
+    FilterField("usage").
+    FilterTag("host", "server01").
+    Limit(1000).
+    Execute(ctx, client)
 ```
 
 ## 版本要求
@@ -570,18 +926,22 @@ if result.Err() != nil {
 
 ## 依赖
 
+核心依赖：
+
 - `github.com/influxdata/influxdb-client-go/v2` v2.13.0
+
+OpenTelemetry Trace 子包依赖：
+
+- `go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp` v0.45.0
+- `go.opentelemetry.io/otel` v1.19.0
 
 ## 许可证
 
 MIT License
 
-## 贡献
-
-欢迎提交 Issue 和 Pull Request！
-
 ## 相关链接
 
 - [InfluxDB 官方文档](https://docs.influxdata.com/influxdb/v2/)
 - [Flux 查询语言](https://docs.influxdata.com/flux/v0/)
-- [官方 Go 客户端](https://github.com/influxdata/influxdb-client-go)
+- [InfluxDB Go Client](https://github.com/influxdata/influxdb-client-go)
+- [OpenTelemetry Go](https://opentelemetry.io/docs/languages/go/)

@@ -13,8 +13,8 @@ const Version = "1.0.0"
 var defaultClient *Client
 
 // Connect 连接 InfluxDB 并设置为默认客户端
-func Connect(config *Config) error {
-	client, err := NewClient(config)
+func Connect(config *Config, opts ...ClientOption) error {
+	client, err := NewClient(config, opts...)
 	if err != nil {
 		return err
 	}
@@ -23,8 +23,8 @@ func Connect(config *Config) error {
 }
 
 // MustConnect 连接 InfluxDB，失败则 panic
-func MustConnect(config *Config) {
-	if err := Connect(config); err != nil {
+func MustConnect(config *Config, opts ...ClientOption) {
+	if err := Connect(config, opts...); err != nil {
 		panic(err)
 	}
 }
